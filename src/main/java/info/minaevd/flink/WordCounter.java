@@ -18,13 +18,24 @@ package info.minaevd.flink;
  * limitations under the License.
  */
 
+import java.util.Iterator;
+import java.util.Map;
+
 import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.common.state.ListState;
+import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.state.MapState;
+import org.apache.flink.api.common.state.MapStateDescriptor;
+import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.co.RichCoFlatMapFunction;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer010;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer010;
 import org.apache.flink.util.Collector;
@@ -54,7 +65,6 @@ public class WordCounter
 
     public static void main( String[] args ) throws Exception
     {
-
         // parse input arguments
         final ParameterTool parameterTool = ParameterTool.fromArgs(args);
 
@@ -71,11 +81,15 @@ public class WordCounter
         // make parameters available in the web interface
         env.getConfig().setGlobalJobParameters(parameterTool);
 
-        DataStreamSource<String> source = env.addSource(
-                new FlinkKafkaConsumer010<>(parameterTool.getRequired("src.topic"), new SimpleStringSchema(),
+        DataStreamSource<String> sourceData = env.addSource(
+                new FlinkKafkaConsumer010<>(parameterTool.getRequired("src.data.topic"), new SimpleStringSchema(),
                         parameterTool.getProperties()));
 
-        DataStream<String> result = countSum(source);
+        DataStreamSource<String> sourceSubscriptions = env.addSource(
+                new FlinkKafkaConsumer010<>(parameterTool.getRequired("src.subscriptions.topic"),
+                        new SimpleStringSchema(), parameterTool.getProperties()));
+
+        DataStream<String> result = countSum(sourceData, sourceSubscriptions);
 
         result.addSink(new FlinkKafkaProducer010<>(parameterTool.getRequired("dst.topic"), new SimpleStringSchema(),
                 parameterTool.getProperties()));
@@ -84,19 +98,85 @@ public class WordCounter
         env.execute("WordCounter");
     }
 
-    private static DataStream<String> countSum( DataStreamSource<String> source )
+    private static DataStream<String> countSum( DataStreamSource<String> sourceData,
+            DataStreamSource<String> sourceSubscriptions )
     {
         //@formatter:off
-        return source
+        return sourceData
                 .flatMap(new LineSplitter())
                 // group by the tuple field "0" and sum up tuple field "1"
                 .keyBy(0)
                 .sum(1)
-                .flatMap(new FlatMapFunction<Tuple2<String,Integer>,String>(){
+                .connect(sourceSubscriptions.map(new MapFunction<String, Tuple2<String, String>>() {
                     @Override
-                    public void flatMap( Tuple2<String, Integer> value, Collector<String> out ) throws Exception
+                    public Tuple2<String, String> map( String value ) throws Exception
                     {
-                        out.collect(value.toString());
+                        String[] splitted = value.split(" ");
+                        if (splitted.length < 2) {
+                            return null;
+                        } else {
+                            return Tuple2.of(splitted[0], splitted[1]);
+                        }
+                    }
+                }))
+                .keyBy(new KeySelector<Tuple2<String,Integer>, String>() {
+                    @Override
+                    public String getKey( Tuple2<String, Integer> value ) throws Exception
+                    {
+                        return "";
+                    }
+                }, new KeySelector<Tuple2<String,String>, String>() {
+                    @Override
+                    public String getKey( Tuple2<String, String> value ) throws Exception
+                    {
+                        return "";
+                    }
+                })
+                .flatMap(new RichCoFlatMapFunction<Tuple2<String,Integer>, Tuple2<String, String>, String>() {
+
+                    private transient ListState<String> subscriptionsCache;
+
+                    private transient MapState<String, Integer> values;
+
+                    @Override
+                    public void open( Configuration parameters ) throws Exception
+                    {
+                        ListStateDescriptor<String> descriptorSubscriptionsCache =
+                                new ListStateDescriptor<>("subscriptionsCache", String.class);
+                        subscriptionsCache = getRuntimeContext().getListState(descriptorSubscriptionsCache);
+
+                        MapStateDescriptor<String, Integer> descriptorValues =
+                                new MapStateDescriptor<>("values", String.class, Integer.class);
+                        values = getRuntimeContext().getMapState(descriptorValues);
+                    }
+                    @Override
+                    public void flatMap1( Tuple2<String, Integer> value, Collector<String> out ) throws Exception
+                    {
+                        values.put(value.f0, value.f1);
+                        out.collect(String.format("%s:%d", value.f0, value.f1));
+                    }
+                    @Override
+                    public void flatMap2( Tuple2<String, String> value, Collector<String> out ) throws Exception
+                    {
+                        String subscriptionId = value.f1;
+
+                        if (value.f0.equals("subscribe")) {
+                            subscriptionsCache.add(subscriptionId);
+
+                            for (Map.Entry<String,Integer> entry : values.entries()) {
+                                out.collect(String.format("%s:%d", entry.getKey(), entry.getValue()));
+                            }
+                        } else if (value.f0.equals("unsubscribe")) {
+
+                            Iterator<String> iterator=subscriptionsCache.get().iterator();
+                            while ( iterator.hasNext() ) {
+                                String s = iterator.next();
+                                if (s.equals(subscriptionId)) {
+                                    iterator.remove();
+                                }
+                            }
+
+                        }
                     }
                 });
         //@formatter:on
