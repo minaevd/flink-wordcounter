@@ -8,9 +8,9 @@ package info.minaevd.flink;
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * <p>
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -42,36 +42,37 @@ import org.apache.flink.util.Collector;
 
 /**
  * Skeleton for a Flink Streaming Job.
- *
- * <p>For a full example of a Flink Streaming Job, see the SocketTextStreamWordCount.java
- * file in the same package/directory or have a look at the website.
- *
+ * <p>
  * <p>You can also generate a .jar file that you can submit on your Flink
  * cluster.
  * Just type
- * 		mvn clean package
+ * mvn clean package
  * in the projects root directory.
  * You will find the jar in
- * 		target/flink-java-project-0.1.jar
+ * target/flink-java-project-0.1.jar
  * From the CLI you can then run
- * 		./bin/flink run -c org.apache.flink.quickstart.StreamingJob target/flink-java-project-0.1.jar
- *
+ * ./bin/flink run -c info.minaevd.flink.WordCounter target/flink-java-project-0.1.jar
+ * <p>
  * <p>For more information on the CLI see:
- *
+ * <p>
  * <p>http://flink.apache.org/docs/latest/apis/cli.html
  */
 public class WordCounter
 {
-
     public static void main( String[] args ) throws Exception
     {
         // parse input arguments
         final ParameterTool parameterTool = ParameterTool.fromArgs(args);
 
         if ( parameterTool.getNumberOfParameters() < 2 ) {
-            System.out.println("Missing parameters!\n" + "Usage: Kafka --src.topic <srctopic> --dst.topic <dsttopic> "
-                    + "--bootstrap.servers <kafka brokers> "
-                    + "--zookeeper.connect <zk quorum> --group.id <some id> [--prefix <prefix>]");
+            //@formatter:off
+            System.out.println("Missing parameters!\n" +
+                    "Usage: ./bin/flink run -c info.minaevd.flink.WordCounter "
+                    + "--src.data.topic <src-data-topic> "
+                    + "--src.subscriptions.topic <control-topic> "
+                    + "--dst.topic <dst-topic> "
+                    + "--bootstrap.servers <kafka-brokers> ");
+            //@formatter:on
             return;
         }
 
@@ -101,38 +102,36 @@ public class WordCounter
     private static DataStream<String> countSum( DataStreamSource<String> sourceData,
             DataStreamSource<String> sourceSubscriptions )
     {
-        //@formatter:off
-        return sourceData
-                .flatMap(new LineSplitter())
+        return sourceData.flatMap(new LineSplitter())
                 // group by the tuple field "0" and sum up tuple field "1"
-                .keyBy(0)
-                .sum(1)
-                .connect(sourceSubscriptions.map(new MapFunction<String, Tuple2<String, String>>() {
+                .keyBy(0).sum(1).connect(sourceSubscriptions.map(new MapFunction<String, Tuple2<String, String>>()
+                {
                     @Override
                     public Tuple2<String, String> map( String value ) throws Exception
                     {
                         String[] splitted = value.split(" ");
-                        if (splitted.length < 2) {
+                        if ( splitted.length < 2 ) {
                             return null;
                         } else {
                             return Tuple2.of(splitted[0], splitted[1]);
                         }
                     }
-                }))
-                .keyBy(new KeySelector<Tuple2<String,Integer>, String>() {
+                })).keyBy(new KeySelector<Tuple2<String, Integer>, String>()
+                {
                     @Override
                     public String getKey( Tuple2<String, Integer> value ) throws Exception
                     {
                         return "";
                     }
-                }, new KeySelector<Tuple2<String,String>, String>() {
+                }, new KeySelector<Tuple2<String, String>, String>()
+                {
                     @Override
                     public String getKey( Tuple2<String, String> value ) throws Exception
                     {
                         return "";
                     }
-                })
-                .flatMap(new RichCoFlatMapFunction<Tuple2<String,Integer>, Tuple2<String, String>, String>() {
+                }).flatMap(new RichCoFlatMapFunction<Tuple2<String, Integer>, Tuple2<String, String>, String>()
+                {
 
                     private transient ListState<String> subscriptionsCache;
 
@@ -149,29 +148,31 @@ public class WordCounter
                                 new MapStateDescriptor<>("values", String.class, Integer.class);
                         values = getRuntimeContext().getMapState(descriptorValues);
                     }
+
                     @Override
                     public void flatMap1( Tuple2<String, Integer> value, Collector<String> out ) throws Exception
                     {
                         values.put(value.f0, value.f1);
                         out.collect(String.format("%s:%d", value.f0, value.f1));
                     }
+
                     @Override
                     public void flatMap2( Tuple2<String, String> value, Collector<String> out ) throws Exception
                     {
                         String subscriptionId = value.f1;
 
-                        if (value.f0.equals("subscribe")) {
+                        if ( value.f0.equals("subscribe") ) {
                             subscriptionsCache.add(subscriptionId);
 
-                            for (Map.Entry<String,Integer> entry : values.entries()) {
+                            for ( Map.Entry<String, Integer> entry : values.entries() ) {
                                 out.collect(String.format("%s:%d", entry.getKey(), entry.getValue()));
                             }
-                        } else if (value.f0.equals("unsubscribe")) {
+                        } else if ( value.f0.equals("unsubscribe") ) {
 
-                            Iterator<String> iterator=subscriptionsCache.get().iterator();
+                            Iterator<String> iterator = subscriptionsCache.get().iterator();
                             while ( iterator.hasNext() ) {
                                 String s = iterator.next();
-                                if (s.equals(subscriptionId)) {
+                                if ( s.equals(subscriptionId) ) {
                                     iterator.remove();
                                 }
                             }
@@ -179,7 +180,6 @@ public class WordCounter
                         }
                     }
                 });
-        //@formatter:on
     }
 
     /**
@@ -199,7 +199,7 @@ public class WordCounter
             // emit the pairs
             for ( String token : tokens ) {
                 if ( token.length() > 0 ) {
-                    out.collect(new Tuple2<String, Integer>(token, 1));
+                    out.collect(new Tuple2<>(token, 1));
                 }
             }
         }
